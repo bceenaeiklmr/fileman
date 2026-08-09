@@ -2,8 +2,8 @@
 ; License:    MIT License
 ; Author:     Bence Markiel (bceenaeiklmr)
 ; Github:     https://github.com/bceenaeiklmr/fileman
-; Date        08.08.2026
-; Version     0.4.0
+; Date        09.08.2026
+; Version     0.5.0
 
 #include fileman.ahk
 #include guimodule.ahk
