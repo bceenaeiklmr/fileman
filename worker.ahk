@@ -2,12 +2,15 @@
 ; License:    MIT License
 ; Author:     Bence Markiel (bceenaeiklmr)
 ; Github:     https://github.com/bceenaeiklmr/fileman
-; Date        08.08.2026
-; Version     0.4.0
+; Date        09.08.2026
+; Version     0.5.0
 
 
 ; Enables multiple instances of this script to run simultaneously
-#SingleInstance Off       
+#SingleInstance Off      
+
+; Preload bcrypt.dll for SHA-256 hashing
+#DllLoad bcrypt.dll
 
 ; Caller script passes the following arguments:
 GUID := A_Args[1]
