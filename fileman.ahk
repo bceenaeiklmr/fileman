@@ -2,8 +2,8 @@
 ; License:    MIT License
 ; Author:     Bence Markiel (bceenaeiklmr)
 ; Github:     https://github.com/bceenaeiklmr/fileman
-; Date        08.08.2026
-; Version     0.4.0
+; Date        09.08.2026
+; Version     0.5.0
 
 #Warn All
 #SingleInstance Force
@@ -310,15 +310,20 @@ class fileMan {
         }
     }
 
-    StartScan(guiApp, params) {
-        guiApp.ClearResults()
-        guiApp.UpdateProgress(5, "Scanning files...")
+    /**
+     * Executes scan logic for GUI or headless calls based on parameters.
+     * @param {Object|String} guiApp Optional GUI application instance.
+     * @param {Object} params Filter criteria and target parameters.
+     */
+    StartScan(guiApp := "", params := {}) {
+        if (IsObject(guiApp)) {
+            guiApp.ClearResults()
+            guiApp.UpdateProgress(5, "Scanning files...")
+        }
 
-        ; Convert minSizeMB and maxSizeMB to bytes for filtering
-        minBytes := params.minSizeMB * 1048576
-        maxBytes := params.maxSizeMB * 1048576
+        minBytes := params.HasOwnProp("minSizeMB") ? params.minSizeMB * 1048576 : 0
+        maxBytes := params.HasOwnProp("maxSizeMB") ? params.maxSizeMB * 1048576 : 0
 
-        ; Extension filtering: build a map of valid extensions for quick lookup
         validExts := Map()
         if (params.HasOwnProp("extensions") && params.extensions != "") {
             for ext in StrSplit(params.extensions, [";", ","], " ") {
@@ -328,32 +333,25 @@ class fileMan {
             }
         }
 
-        ; Collect files from the specified directories
         matchedFiles := []
-        
-        ; Supports both params.targetPaths array and single params.targetPath
-        targetPaths := params.HasOwnProp("targetPaths") ? params.targetPaths : [params.targetPath]
+        targetPaths := params.HasOwnProp("targetPaths") ? params.targetPaths : (params.HasOwnProp("targetPath") ? [params.targetPath] : this.targetPaths)
 
         for targetDir in targetPaths {
             if (targetDir == "" || !DirExist(targetDir))
                 continue
 
             Loop Files, RTrim(targetDir, "\") "\*.*", "R" {
-                
-                ; Minimum and Maximum file size
                 if (minBytes > 0 && A_LoopFileSize < minBytes)
                     continue
                 if (maxBytes > 0 && A_LoopFileSize > maxBytes)
                     continue
 
-                ; Extension check
                 if (validExts.Count > 0) {
                     if (!validExts.Has(StrLower(A_LoopFileExt)))
                         continue
                 }
 
-                ; Filename pattern (Substring)
-                if (params.filenamePattern != "*" && params.filenamePattern != "") {
+                if (params.HasOwnProp("filenamePattern") && params.filenamePattern != "*" && params.filenamePattern != "") {
                     cleanPattern := StrReplace(params.filenamePattern, "*", "")
                     if (cleanPattern != "" && !InStr(A_LoopFileName, cleanPattern))
                         continue
@@ -364,48 +362,50 @@ class fileMan {
         }
 
         if (matchedFiles.Length == 0) {
-            guiApp.UpdateProgress(100, "No files matched the specified criteria.")
+            if (IsObject(guiApp))
+                guiApp.UpdateProgress(100, "No files matched the specified criteria.")
             return
         }
 
-        guiApp.UpdateProgress(20, "Found " . matchedFiles.Length . " files. Dispatching to workers...")
+        if (IsObject(guiApp))
+            guiApp.UpdateProgress(20, "Found " . matchedFiles.Length . " files. Dispatching to workers...")
 
-        ; Pass the filtered list to the workers
         this.DispatchToWorkers(guiApp, matchedFiles)
     }
 
     /**
-     * Dispatches a list of files to worker threads for hashing and duplicate verification.
-     * @param {Object} guiApp GUI application instance for progress updates.
-     * @param {Array} fileList List of file paths to process.
+     * Dispatches file hashing jobs to host workers.
+     * @param {Object|String} guiApp Optional GUI application instance.
+     * @param {Array} fileList List of target file paths.
      */
-    DispatchToWorkers(guiApp, fileList) {
-        if (!this.HasOwnProp("host") || !this.host) {
-            this.host := Host()
-            this.host.AddWorker(this.workers, "Worker.ahk")
+    DispatchToWorkers(guiApp := "", fileList := []) {
+            if (!this.HasOwnProp("host") || !this.host) {
+                this.host := Host()
+                this.host.AddWorker(this.workers, "Worker.ahk")
+            }
+
+            for filePath in fileList {
+                this.host.Queue(filePath)
+            }
+
+            startTime := A_TickCount
+            
+            onProgress(current, total, bytesRead := 0) {
+                if (IsObject(guiApp)) {
+                    percent := (total > 0) ? Round((current / total) * 60) : 0
+                    guiApp.UpdateProgress(
+                        20 + percent,
+                        Format("Hashing: {} / {} ({})", current, total, FormatBytes(bytesRead))
+                    )
+                }
+            }
+
+            hashIndex := this.host.Start(200, onProgress)
+
+            this.hashDuration := (A_TickCount - startTime) / 1000
+            this.verifiedFileDuplicates := this.BuildDuplicates(hashIndex)
+            this.host.Close()
         }
-
-        for filePath in fileList {
-            this.host.Queue(filePath)
-        }
-
-        startTime := A_TickCount
-        
-        ; Progress callback updating the GUI during hashing
-        onProgress(current, total, bytesRead := 0) {
-            percent := (total > 0) ? Round((current / total) * 60) : 0
-            guiApp.UpdateProgress(
-                20 + percent,
-                Format("Hashing: {} / {} ({})", current, total, FormatBytes(bytesRead))
-            )
-        }
-
-        hashIndex := this.host.Start(200, onProgress)
-
-        this.hashDuration := (A_TickCount - startTime) / 1000
-        this.verifiedFileDuplicates := this.BuildDuplicates(hashIndex)
-        this.host.Close()
-    }
 
     /**
      * Traverses a folder hierarchy non-recursively using a stack-based loop.
@@ -511,11 +511,13 @@ class fileMan {
      * @returns {Object} Object structured as {fileCount: Integer, bytes: Integer}.
      */
     GetReclaimableSpaceSummary() {
-        local summary := {fileCount: 0, bytes: 0}
-        
+        local summary := { fileCount: 0, bytes: 0 }
+
         for group in this.verifiedFileDuplicates {
-            for path in group.paths {
-                if (A_Index == 1)
+            this.SortArray(group.paths)
+
+            for idx, path in group.paths {
+                if (idx == 1)
                     continue
                 if (FileExist(path)) {
                     summary.fileCount += 1
@@ -527,6 +529,30 @@ class fileMan {
     }
 
     /**
+     * Sorts an array of strings alphabetically in place using StrCompare.
+     * @param {Array} arr Target array of strings to sort.
+     * @returns {Array} Sorted array reference.
+     */
+    SortArray(arr) {
+        n := arr.Length
+        if (n <= 1)
+            return arr
+
+        loop n {
+            i := A_Index
+            loop n - i {
+                j := A_Index
+                if (StrCompare(arr[j], arr[j + 1]) > 0) {
+                    temp := arr[j]
+                    arr[j] := arr[j + 1]
+                    arr[j + 1] := temp
+                }
+            }
+        }
+        return arr
+    }
+
+    /**
      * Relocates verified duplicate files into a quarantine directory structure.
      * @param {String} quarantineRoot Destination root folder for isolated files.
      * @param {Boolean} dryRun If true, previews file operations without executing disk changes.
@@ -534,25 +560,28 @@ class fileMan {
      */
     MoveVerifiedDuplicates(quarantineRoot, dryRun := true) {
         local result := {moved: 0, skipped: 0, bytes: 0, actions: []}
-        quarantineRoot := RTrim(quarantineRoot, "\\")
+        quarantineRoot := RTrim(quarantineRoot, "\")
 
         for groupNumber, group in this.verifiedFileDuplicates {
-            for srcPath in group.paths {
-                if (A_Index == 1)
+            this.SortArray(group.paths)
+
+            for idx, srcPath in group.paths {
+                if (idx == 1)
                     continue
                 if (!FileExist(srcPath)) {
                     result.skipped += 1
                     continue
                 }
 
-                dstFolder := quarantineRoot . "\\group_" . groupNumber
+                dstFolder := quarantineRoot . "\group_" . groupNumber
                 SplitPath(srcPath, &fileName)
-                dstPath := dstFolder . "\\" . A_Index . "_" . fileName
+                dstPath := dstFolder . "\" . idx . "_" . fileName
                 result.actions.Push({source: srcPath, destination: dstPath})
                 result.bytes += FileGetSize(srcPath)
 
                 if (!dryRun) {
-                    DirCreate(dstFolder)
+                    if (!DirExist(dstFolder))
+                        DirCreate(dstFolder)
                     try {
                         FileMove(srcPath, dstPath)
                         result.moved += 1
