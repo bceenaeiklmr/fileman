@@ -1,4 +1,4 @@
-; Script     fileman.ahk
+; Script      fileman.ahk
 ; License:    MIT License
 ; Author:     Bence Markiel (bceenaeiklmr)
 ; Github:     https://github.com/bceenaeiklmr/fileman
